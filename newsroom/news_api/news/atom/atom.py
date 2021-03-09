@@ -1,12 +1,14 @@
 import superdesk
 import flask
 from eve.methods.get import get_internal
-from lxml import etree
+from lxml import etree,  html as lxml_html
 from lxml.etree import SubElement
 from superdesk.utc import utcnow
+from superdesk.etree import to_string
 from flask import current_app as app
 import datetime
 import logging
+import re
 
 blueprint = superdesk.Blueprint('atom', __name__)
 
@@ -91,6 +93,29 @@ def get_atom():
                 SubElement(entry, 'category', attrib={'term': category.get('name')})
 
             SubElement(entry, 'summary').text = etree.CDATA(complete_item.get('description_text', ''))
+
+            # If there are any image embeds then reset the source to a Newshub asset
+            html_updated = False
+            regex = r' EMBED START Image {id: \"editor_([0-9]+)'
+            root_elem = lxml_html.fromstring(complete_item.get('body_html', ''))
+            comments = root_elem.xpath('//comment()')
+            for comment in comments:
+                if 'EMBED START Image' in comment.text:
+                    m = re.search(regex, comment.text)
+                    # Assumes the sibling of the Embed Image comment is the figure tag containing the image
+                    figure_elem = comment.getnext()
+                    if figure_elem is not None and figure_elem.tag == "figure":
+                        imgElem = figure_elem.find("./img")
+                        if imgElem is not None and m and m.group(1):
+                            embed_id = "editor_" + m.group(1)
+                            src = complete_item.get("associations").get(embed_id).get("renditions").get("16-9")
+                            if src:
+                                imgElem.attrib["src"] = flask.url_for('assets.get_item', asset_id=src.get('media'),
+                                                                      _external=True)
+                                html_updated = True
+            if html_updated:
+                complete_item["body_html"] = to_string(root_elem, method="html")
+
             SubElement(entry, 'content', attrib={'type': 'html'}).text = etree.CDATA(complete_item.get('body_html', ''))
 
             if ((item.get('associations') or {}).get('featuremedia') or {}).get('renditions'):
